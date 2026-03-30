@@ -34,7 +34,7 @@ export interface AnalysisJob {
     completedAt?: string;
     error?: string;
     /** 用于乐观锁的版本号 */
-    version?: number;
+    version: number; // 🔴 修改：从可选改为必选
 }
 
 /**
@@ -73,4 +73,10 @@ export interface ThirdPartyApiResponse {
         score?: number | string | null;
     };
     error?: string;
+}
+
+export interface LogContext {
+  traceId?: string;
+  jobId?: string;
+  [key: string]: unknown;
 }

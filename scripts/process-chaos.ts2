@@ -1,0 +1,56 @@
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { AnalysisProcessor } from '../apps/worker-service/src/processors/analysis.processor';
+import type { AnalysisRequestedEvent } from '@senior-challenge/shared-types';
+import { v4 as uuidv4 } from 'uuid';
+
+const CHAOS_DATA_PATH = path.resolve(process.cwd(), 'debug-payloads/chaos-data-samples.json');
+
+const runChaosTest = async () => {
+  console.log('🎬 开始处理脏数据样本...');
+  
+  // 1. 初始化 Processor
+  const processor = new AnalysisProcessor();
+  
+  // 🔴 核心修复：先等待数据库连接建立好
+  console.log('⏳ 等待数据库连接...');
+  await processor.waitForReady();
+  console.log('✅ 数据库连接成功，开始处理任务\n');
+  
+  // 2. 读取 chaos 数据（如果没有这个文件，使用模拟数据）
+  let chaosData: any[] = [];
+  try {
+    const chaosContent = await fs.readFile(CHAOS_DATA_PATH, 'utf-8');
+    chaosData = JSON.parse(chaosContent);
+    console.log(`📂 成功读取 ${chaosData.length} 条脏数据样本\n`);
+  } catch {
+    console.log('ℹ️ 未找到 chaos-data-samples.json，使用模拟脏数据\n');
+    // 模拟 10 条脏数据
+    chaosData = Array.from({ length: 10 }, (_, i) => ({
+      id: i,
+      rawValue: i % 2 === 0 ? { age: '25+', tags: 'a,b,c' } : { age: null, score: '0.9' }
+    }));
+  }
+  
+  // 3. 模拟处理每条数据
+  for (const rawData of chaosData) {
+    const mockEvent: AnalysisRequestedEvent = {
+      eventType: 'AnalysisRequested',
+      jobId: uuidv4(),
+      userId: 'user-chaos',
+      dataUrl: 'https://example.com/chaos.json',
+      timestamp: new Date().toISOString(),
+      traceId: `trace-${uuidv4()}`
+    };
+    await processor.process(mockEvent);
+    // 稍微延迟一下，让日志更清晰
+    await new Promise(r => setTimeout(r, 100));
+  }
+  
+  // 4. 手动触发失败记录保存和统计打印（通过优雅退出）
+  console.log('\n🏁 脏数据处理完成！正在保存失败记录...');
+  // 触发 SIGINT 来调用 flushFailedRecords
+  process.kill(process.pid, 'SIGINT');
+};
+
+runChaosTest().catch(console.error);

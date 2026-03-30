@@ -1,0 +1,7 @@
+{
+  "eventType": "AnalysisRequested",
+  "jobId": "3bc37ed5-1a6a-49a6-80a0-02778572d026",
+  "userId": "user-123",
+  "dataUrl": "https://example.com/data.json",
+  "timestamp": "2026-03-30T07:27:41.699Z"
+}

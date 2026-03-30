@@ -10,15 +10,9 @@ const runChaosTest = async () => {
   const processor = new AnalysisProcessor();
   await processor.waitForReady();
 
-  // 读取脏数据（兼容文件不存在的情况）
-  let chaosData = [];
-  try {
-    const content = await fs.readFile(CHAOS_DATA_PATH, 'utf-8');
-    chaosData = JSON.parse(content);
-  } catch (err) {
-    console.warn(`⚠️ 读取混沌测试数据失败，使用默认12条数据: ${err.message}`);
-    chaosData = Array(12).fill({}); // 默认生成12条测试数据
-  }
+  // 读取脏数据
+  const content = await fs.readFile(CHAOS_DATA_PATH, 'utf-8');
+  const chaosData = JSON.parse(content);
 
   // 批量处理
   for (const _ of chaosData) {
@@ -33,13 +27,12 @@ const runChaosTest = async () => {
     await processor.process(mockEvent);
   }
 
-  // 保存失败记录（调用公共方法）
+  // 保存失败记录
   const saveResult = await processor.flushFailedRecords();
 
   // ==============================
   // ✅ 面试官要求的标准输出格式
   // ==============================
-  // 修复：通过公共 getter 访问统计信息
   console.log(`✅ Processed: ${processor.stats.processed} records`);
   console.log(`⚠️ Skipped (validation failed): ${processor.stats.skipped} records`);
   if (saveResult) {
@@ -49,7 +42,4 @@ const runChaosTest = async () => {
   process.exit(0);
 };
 
-runChaosTest().catch(err => {
-  console.error('❌ 混沌测试执行失败:', err);
-  process.exit(1);
-});
+runChaosTest().catch(console.error);

@@ -1,0 +1,173 @@
+import mongoose from 'mongoose';
+import type { AnalysisRequestedEvent, Demographics, ThirdPartyApiResponse, AnalysisJob } from '@senior-challenge/shared-types';
+import type { MessageProcessor } from './processor.interface';
+import { captureMiddleware } from '../middleware/capture.middleware';
+
+const MONGODB_URI = process.env.MONGODB_URI ?? 'mongodb://localhost:27017/analysis_db';
+
+export class AnalysisProcessor implements MessageProcessor {
+    private connection: mongoose.Connection | null = null;
+
+    constructor() {
+        this.initializeDatabase();
+    }
+
+    private async initializeDatabase(): Promise<void> {
+        try {
+            await mongoose.connect(MONGODB_URI);
+            this.connection = mongoose.connection;
+            console.log('✅ Worker MongoDB 连接成功');
+        } catch (error) {
+            console.error('❌ Worker MongoDB 连接失败', error);
+        }
+    }
+
+    async process(event: AnalysisRequestedEvent): Promise<void> {
+        await captureMiddleware(event, async () => {
+            await this.realProcess(event);
+        });
+    }
+
+    /**
+     * 重构后：唯一的计算和写入源，使用乐观锁防脏写
+     */
+    private async realProcess(event: AnalysisRequestedEvent): Promise<void> {
+        const { jobId, dataUrl } = event;
+
+        if (!this.connection) {
+            throw new Error('❌ 无数据库连接');
+        }
+
+        try {
+            // ==============================================
+            // 1. 防竞态：只有 PENDING 状态且 version=0 的任务才能处理
+            // ==============================================
+            const updateProcessingResult = await this.connection.collection('analysis_jobs').findOneAndUpdate(
+                { jobId, status: 'PENDING', version: 0 },
+                {
+                    $set: {
+                        status: 'PROCESSING',
+                        updatedAt: new Date().toISOString()
+                    },
+                    $inc: { version: 1 } // 乐观锁：版本号从 0 → 1
+                },
+                { returnDocument: 'after' }
+            );
+
+            if (!updateProcessingResult.value) {
+                console.log(`⚠️ 任务 ${jobId} 已被其他实例处理或状态不对，跳过`);
+                return;
+            }
+
+            const currentVersion = (updateProcessingResult.value as AnalysisJob).version;
+            console.log(`🔄 任务 ${jobId} 开始处理，当前版本: ${currentVersion}`);
+
+            // ==============================================
+            // 2. 执行计算（唯一的计算点）
+            // ==============================================
+            const apiResponse = await this.callThirdPartyApi(dataUrl);
+            const demographics = this.transformApiResponse(apiResponse);
+
+            // ==============================================
+            // 3. 防竞态：只有 PROCESSING 状态且 version=1 的任务才能写入结果
+            // ==============================================
+            const updateCompletedResult = await this.connection.collection('analysis_jobs').findOneAndUpdate(
+                { jobId, status: 'PROCESSING', version: currentVersion },
+                {
+                    $set: {
+                        status: 'COMPLETED',
+                        demographics,
+                        completedAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString()
+                    },
+                    $inc: { version: 1 } // 乐观锁：版本号从 1 → 2
+                },
+                { returnDocument: 'after' }
+            );
+
+            if (!updateCompletedResult.value) {
+                console.error(`❌ 任务 ${jobId} 写入结果失败：版本号或状态不匹配`);
+                return;
+            }
+
+            console.log(`✅ 任务 ${jobId} 处理完成，最终版本: ${(updateCompletedResult.value as AnalysisJob).version}`);
+        } catch (error) {
+            console.error(`❌ 任务 ${jobId} 处理失败:`, error);
+            // 失败时也尝试更新状态
+            try {
+                await this.connection.collection('analysis_jobs').updateOne(
+                    { jobId, status: 'PROCESSING' },
+                    {
+                        $set: {
+                            status: 'FAILED',
+                            error: error instanceof Error ? error.message : 'Unknown error',
+                            updatedAt: new Date().toISOString()
+                        }
+                    }
+                );
+            } catch {}
+            throw error;
+        }
+    }
+
+    // 辅助方法保持不变（适配原项目的脏数据场景）
+    private async callThirdPartyApi(dataUrl: string): Promise<ThirdPartyApiResponse> {
+        await new Promise((resolve) => setTimeout(resolve, 500 + Math.random() * 1000));
+        const scenarios: ThirdPartyApiResponse[] = [
+            {
+                success: true,
+                data: {
+                    age: 28,
+                    gender: 'female',
+                    country: 'US',
+                    city: 'New York',
+                    tags: ['fashion', 'travel'],
+                    score: 0.85,
+                },
+            },
+            {
+                success: true,
+                data: {
+                    age: '25+',
+                    gender: 'male',
+                    country: 'UK',
+                    city: null,
+                    tags: 'lifestyle,food',
+                    score: '0.72',
+                },
+            },
+            {
+                success: true,
+                data: {
+                    age: null,
+                    gender: undefined,
+                    country: 'CA',
+                    city: 'Toronto',
+                    tags: null,
+                    score: null,
+                },
+            },
+        ];
+        return scenarios[Math.floor(Math.random() * scenarios.length)];
+    }
+
+    private transformApiResponse(response: ThirdPartyApiResponse): Demographics {
+        const data = response.data!;
+        return {
+            ageRange: this.calculateAgeRange(Number(data.age) || 0),
+            gender: data.gender as string,
+            location: data.country as string,
+            interests: Array.isArray(data.tags) ? data.tags : [],
+            confidence: Number(data.score) || 0,
+        };
+    }
+
+    private calculateAgeRange(age: number): string {
+        if (age < 18) return 'under-18';
+        if (age < 25) return '18-24';
+        if (age < 35) return '25-34';
+        if (age < 45) return '35-44';
+        if (age < 55) return '45-54';
+        return '55+';
+    }
+}

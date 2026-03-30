@@ -31,11 +31,6 @@ export class AnalysisProcessor implements MessageProcessor {
     });
   }
 
-  // 新增：暴露统计信息的公共 getter
-  public get stats(): Readonly<BatchStats> {
-    return { ...this.batchStats }; // 返回副本，避免外部修改
-  }
-
   // 新增：暴露给外部的等待连接方法
   public async waitForReady(): Promise<void> {
     await this.connectionPromise;
@@ -87,22 +82,12 @@ export class AnalysisProcessor implements MessageProcessor {
         { returnDocument: 'after' }
       );
 
-      // 修复：先检查 value 是否存在，再处理
       if (!updateProcessing.value) {
         log.warn({ event: 'JobAlreadyProcessed', jobId });
         this.batchStats.skipped++;
-        // 新增：记录失败原因
-        this.batchStats.failedRecords.push({
-          jobId,
-          traceId,
-          rawPayload: event,
-          error: 'Job not found or already processed (PENDING+version=0 mismatch)',
-          failedAt: new Date().toISOString()
-        });
         return;
       }
 
-      // 修复：安全获取 version（加类型断言+空值保护）
       const currentVersion = (updateProcessing.value as AnalysisJob).version;
       log.info({ event: 'JobStarted', currentVersion });
 
@@ -199,27 +184,23 @@ export class AnalysisProcessor implements MessageProcessor {
     }
   }
 
-  // 修复：改为公共方法，并返回保存结果
-  public async flushFailedRecords() {
-    if (this.batchStats.failedRecords.length === 0) {
-      return null;
+  // 优雅退出时保存失败记录
+  private async flushFailedRecords() {
+    if (this.batchStats.failedRecords.length > 0) {
+      const result = await saveFailedRecords(this.batchStats.failedRecords);
+      logger.info({
+        event: 'FailedRecordsSaved',
+        batchId: result.batchId,
+        filePath: result.filePath,
+        count: result.count
+      });
     }
-    const result = await saveFailedRecords(this.batchStats.failedRecords);
-    logger.info({
-      event: 'FailedRecordsSaved',
-      batchId: result.batchId,
-      filePath: result.filePath,
-      count: result.count
-    });
-    // 清空失败记录（避免重复保存）
-    this.batchStats.failedRecords = [];
     // 打印批处理统计
     logger.info({
       event: 'BatchStats',
       processed: this.batchStats.processed,
       skipped: this.batchStats.skipped
     });
-    return result;
   }
 
   // 辅助方法保持不变
